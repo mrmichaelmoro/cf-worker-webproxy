@@ -5,7 +5,7 @@ export default {
     if (!authHeader) return createAuthResponse();
 
     try {
-      const base64Str = authHeader.split(' ')[1]; 
+      const base64Str = authHeader.split(' '); 
       const decoded = atob(base64Str).split(':');
       if (decoded[0] !== env.PROXY_USER || decoded[1] !== env.PROXY_PASS) {
         return createAuthResponse();
@@ -14,19 +14,16 @@ export default {
       return createAuthResponse();
     }
 
-    // 2. Parse Incoming Routing States
     const proxyUrl = new URL(request.url);
     const proxyOrigin = proxyUrl.origin;
     
-    // Resolve upstream endpoint from configuration
     const targetBase = env.TARGET_URL.replace(/\/$/, ""); 
     const targetHost = new URL(targetBase).hostname;
 
     let destinationUrl = "";
     let upstreamHost = targetHost;
 
-    // 3. Dynamic Sub-Domain Asset Mapping Layer
-    // Maps inbound proxy patterns cleanly to the target asset engines
+    // Asset route multiplexer
     if (proxyUrl.pathname.startsWith('/__proxy_asset_cloudinary/')) {
       destinationUrl = "https://cloudinary.com" + proxyUrl.pathname.replace('/__proxy_asset_cloudinary', '') + proxyUrl.search;
       upstreamHost = "://cloudinary.com";
@@ -34,16 +31,14 @@ export default {
       destinationUrl = "https://ctfassets.net" + proxyUrl.pathname.replace('/__proxy_asset_ctfassets', '') + proxyUrl.search;
       upstreamHost = "images.ctfassets.net";
     } else {
-      // Default to core target host routing
       destinationUrl = targetBase + proxyUrl.pathname + proxyUrl.search;
       upstreamHost = targetHost;
     }
 
-    // 4. Construct Spoofed Upstream Network Request
+    // Clone incoming headers and spoof routing metrics
     let newHeaders = new Headers(request.headers);
     newHeaders.set("Host", upstreamHost);
     newHeaders.set("Referer", `https://${upstreamHost}/`);
-    // Mask security identification markers
     newHeaders.delete("Authorization"); 
 
     const modifiedRequest = new Request(destinationUrl, {
@@ -57,7 +52,7 @@ export default {
       const response = await fetch(modifiedRequest);
       const contentType = response.headers.get("content-type") || "";
 
-      // Handle transparent HTTP upstream redirect states cleanly
+      // Intercept and rewrite downstream HTTP redirection pointers
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("Location");
         if (location) {
@@ -67,44 +62,85 @@ export default {
           } else if (location.startsWith('/')) {
             rewrittenLocation = proxyOrigin + location;
           }
-          let redirectResponse = new Response(`Redirecting to ${rewrittenLocation}`, { status: response.status });
+          let redirectResponse = new Response(`Redirecting`, { status: response.status });
           redirectResponse.headers.set("Location", rewrittenLocation);
           return redirectResponse;
         }
       }
 
-      // 5. Streaming DOM Engine Rewriter
-      // If payload is HTML, dynamically catch and modify asset strings on the fly
+      // Intercept and alter cookie scopes to match your proxy endpoint domain
+      let finalHeaders = new Headers(response.headers);
+      if (finalHeaders.has("Set-Cookie")) {
+        const cookies = finalHeaders.get("Set-Cookie");
+        const rewrittenCookies = cookies.replace(new RegExp(`domain=\\.?${targetHost}`, 'gi'), `domain=${proxyUrl.hostname}`);
+        finalHeaders.set("Set-Cookie", rewrittenCookies);
+      }
+
+      // Process streaming HTML DOM translations
       if (contentType.includes("text/html")) {
+        // Dynamic JS Patch: Overrides browser navigation APIs on client side execution layers
+        const injectionScript = `
+          <script>
+            (function() {
+              const targetHost = "${targetHost}";
+              const proxyOrigin = "${proxyOrigin}";
+              
+              // Intercept dynamic pushState/replaceState layout modifications
+              const _pushState = history.pushState;
+              const _replaceState = history.replaceState;
+              
+              history.pushState = function(state, title, url) {
+                if (url && url.includes(targetHost)) url = url.replace(targetHost, window.location.host);
+                return _pushState.apply(this, [state, title, url]);
+              };
+              history.replaceState = function(state, title, url) {
+                if (url && url.includes(targetHost)) url = url.replace(targetHost, window.location.host);
+                return _replaceState.apply(this, [state, title, url]);
+              };
+
+              // Re-route dynamically spawned fetch/XHR network sequences
+              const _oldFetch = window.fetch;
+              window.fetch = function(input, init) {
+                if (typeof input === 'string' && input.includes(targetHost)) {
+                  input = input.replace('https://' + targetHost, proxyOrigin);
+                }
+                return _oldFetch(input, init);
+              };
+            })();
+          </script>
+        `;
+
         const rewriter = new HTMLRewriter()
+          .on("head", new ElementInjector(injectionScript))
           .on("a", new AttributeRewriter("href", targetHost, proxyOrigin))
           .on("link", new AttributeRewriter("href", targetHost, proxyOrigin))
           .on("form", new AttributeRewriter("action", targetHost, proxyOrigin))
           .on("script", new AttributeRewriter("src", targetHost, proxyOrigin))
-          // Intercept hardcoded asset subdomains
-          .on("img", new AttributeRewriter("src", targetHost, proxyOrigin))
-          .on("[src]", new AttributeRewriter("src", targetHost, proxyOrigin))
-          .on("[href]", new AttributeRewriter("href", targetHost, proxyOrigin));
+          .on("img", new AttributeRewriter("src", targetHost, proxyOrigin));
 
         const transformedResponse = rewriter.transform(response);
-        let finalResponse = new Response(transformedResponse.body, transformedResponse);
-        finalResponse.headers.set("Access-Control-Allow-Origin", "*");
-        finalResponse.headers.delete("Content-Security-Policy"); // Drop restriction policies blocking re-routes
-        return finalResponse;
+        let htmlResponse = new Response(transformedResponse.body, {
+          status: response.status,
+          headers: finalHeaders
+        });
+        htmlResponse.headers.set("Access-Control-Allow-Origin", "*");
+        htmlResponse.headers.delete("Content-Security-Policy");
+        return htmlResponse;
       }
 
-      // Return raw structural buffers (JS, images, data vectors) untouched
-      let passThroughResponse = new Response(response.body, response);
-      passThroughResponse.headers.set("Access-Control-Allow-Origin", "*");
-      return passThroughResponse;
+      return new Response(response.body, { status: response.status, headers: finalHeaders });
 
     } catch (err) {
-      return new Response("Complete Proxy Layer Error: " + err.stack, { status: 500 });
+      return new Response("Proxy Engine Core Fault: " + err.stack, { status: 500 });
     }
   }
 };
 
-// 6. DOM Attribute Parsing Engine
+class ElementInjector {
+  constructor(content) { this.content = content; }
+  element(element) { element.prepend(this.content, { html: true }); }
+}
+
 class AttributeRewriter {
   constructor(attributeName, targetHost, proxyOrigin) {
     this.attributeName = attributeName;
@@ -115,20 +151,16 @@ class AttributeRewriter {
     const attributeValue = element.getAttribute(this.attributeName);
     if (attributeValue) {
       let newValue = attributeValue;
-      
-      // Convert true target links into local proxy points
       if (newValue.includes(this.targetHost)) {
         newValue = newValue.replaceAll(`https://${this.targetHost}`, this.proxyOrigin);
         newValue = newValue.replaceAll(`http://${this.targetHost}`, this.proxyOrigin);
       }
-      // Handle cloud asset integrations securely through your worker paths
       if (newValue.includes("://cloudinary.com")) {
         newValue = newValue.replace(/^https?:\/\/res\.cloudinary\.com/, `${this.proxyOrigin}/__proxy_asset_cloudinary`);
       }
       if (newValue.includes("images.ctfassets.net")) {
         newValue = newValue.replace(/^https?:\/\/images\.ctfassets\.net/, `${this.proxyOrigin}/__proxy_asset_ctfassets`);
       }
-
       element.setAttribute(this.attributeName, newValue);
     }
   }
@@ -137,9 +169,7 @@ class AttributeRewriter {
 function createAuthResponse() {
   return new Response('Unauthorized Access', {
     status: 401,
-    headers: {
-      'WWW-Authenticate': 'Basic realm="Secure Cloud Terminal Access", charset="UTF-8"'
-    }
+    headers: { 'WWW-Authenticate': 'Basic realm="Secure Gateway Pipeline", charset="UTF-8"' }
   });
 }
 
